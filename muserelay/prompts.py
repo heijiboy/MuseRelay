@@ -9,15 +9,17 @@ from __future__ import annotations
 import os
 from typing import Dict, List
 
+from .config import is_ignored_local_file
+
 
 def get_local_folder_contents(cwd: str, max_files: int = 50, max_size_bytes: int = 100_000) -> Dict[str, str]:
-    """Read all text files in cwd, skipping VCS and dependencies."""
+    """Read all text files in cwd, skipping VCS, dependencies, and local-only secrets."""
     files_content: Dict[str, str] = {}
     ignored_dirs = {".git", "__pycache__", "node_modules", ".venv", "venv", ".idea", ".vscode", "dist", "build"}
     for root, dirs, files in os.walk(cwd):
         dirs[:] = [d for d in dirs if d not in ignored_dirs and not d.startswith(".")]
         for f in sorted(files):
-            if f.startswith("."):
+            if f.startswith(".") or is_ignored_local_file(f):
                 continue
             full_path = os.path.join(root, f)
             rel_path = os.path.relpath(full_path, cwd).replace("\\", "/")
@@ -51,7 +53,7 @@ def list_local_files(cwd: str, max_files: int = 100) -> List[str]:
     for root, dirs, files in os.walk(cwd):
         dirs[:] = [d for d in dirs if d not in ignored_dirs and not d.startswith(".")]
         for f in sorted(files):
-            if f.startswith("."):
+            if f.startswith(".") or is_ignored_local_file(f):
                 continue
             full_path = os.path.join(root, f)
             rel_path = os.path.relpath(full_path, cwd).replace("\\", "/")

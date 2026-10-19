@@ -12,7 +12,7 @@ import re
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
-from .config import BUBBLE_SEP
+from .config import BUBBLE_SEP, is_ignored_local_file
 
 
 def strip_system_tags(text: str) -> str:
@@ -298,7 +298,7 @@ def find_referenced_local_files(text: str, cwd: str) -> List[Tuple[str, str, str
     seen = set()
     for c in candidates:
         rel = os.path.basename(c)
-        if rel in seen:
+        if rel in seen or is_ignored_local_file(rel):
             continue
         full_path = os.path.normpath(os.path.join(cwd, c))
         if os.path.isfile(full_path):
@@ -325,11 +325,25 @@ def find_referenced_local_files(text: str, cwd: str) -> List[Tuple[str, str, str
             if w.lower() not in ("from", "what", "where", "when", "here", "there", "please", "banana", "this", "that", "with", "have"):
                 keywords.append(w)
 
+        # No distinctive keyword (e.g. a plain lowercase prompt like
+        # "them anh vao trang html cua website") -> match by file type mentioned.
+        target_exts = set()
+        if re.search(r"\b(?:html?|website|web\s*page|webpage|trang|giao\s*di[eệ]n|landing)\b", t_lower):
+            target_exts.update({".html", ".htm"})
+        if re.search(r"\b(?:css|stylesheet)\b", t_lower):
+            target_exts.add(".css")
+        if re.search(r"\b(?:javascript|js|script)\b", t_lower):
+            target_exts.add(".js")
+        if re.search(r"\b(?:python|py)\b", t_lower):
+            target_exts.add(".py")
+
         search_exts = {".html", ".htm", ".js", ".css", ".ts", ".jsx", ".tsx", ".json", ".py"}
         cand_matches = []
         for root, dirs, files in os.walk(cwd):
             dirs[:] = [d for d in dirs if d not in ("node_modules", ".git", ".next", "__pycache__", "dist", "build")]
             for fn in files:
+                if fn.startswith(".") or is_ignored_local_file(fn):
+                    continue
                 ext = os.path.splitext(fn)[1].lower()
                 if ext in search_exts:
                     fpath = os.path.join(root, fn)
@@ -337,15 +351,17 @@ def find_referenced_local_files(text: str, cwd: str) -> List[Tuple[str, str, str
                         if os.path.getsize(fpath) < 150_000:
                             with open(fpath, "r", encoding="utf-8", errors="replace") as f:
                                 content = f.read()
-                                for kw in keywords:
-                                    if kw and kw in content:
-                                        rel_path = os.path.relpath(fpath, cwd)
-                                        if rel_path not in seen:
-                                            seen.add(rel_path)
-                                            # Prioritize html files for UI / website prompts
-                                            priority = 0 if ext in (".html", ".htm") else 1
-                                            cand_matches.append((priority, rel_path, fpath, content))
-                                        break
+                                if keywords:
+                                    matched = any(kw and kw in content for kw in keywords) or (ext in target_exts)
+                                else:
+                                    matched = ext in target_exts
+                                if matched:
+                                    rel_path = os.path.relpath(fpath, cwd)
+                                    if rel_path not in seen:
+                                        seen.add(rel_path)
+                                        # Prioritize html files for UI / website prompts
+                                        priority = 0 if ext in (".html", ".htm") else 1
+                                        cand_matches.append((priority, rel_path, fpath, content))
                     except Exception:
                         pass
             if len(cand_matches) >= 5:

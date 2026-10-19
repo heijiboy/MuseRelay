@@ -452,7 +452,7 @@ def run_daemon_server(mgr: BrowserManager, port: int) -> None:
             ref_files = find_referenced_local_files(clean_last_user_msg, cwd)
             is_edit_request = bool(
                 re.search(
-                    r"\b(?:add|insert|edit|modify|update|solve|change|replace|overwrite|fix|patch|write\s+(?:the\s+)?solution)\b",
+                    r"\b(?:add|insert|edit|modify|update|solve|change|replace|overwrite|fix|patch|write\s+(?:the\s+)?solution|th[eê]m|s[uử]a|ch[iỉ]nh|c[aậ]p\s*nh[aậ]t|[dđ][oổ]i|thay|vi[eế]t)\b",
                     clean_last_user_msg,
                     flags=re.IGNORECASE,
                 )

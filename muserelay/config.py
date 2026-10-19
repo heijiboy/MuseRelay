@@ -30,6 +30,24 @@ STATE_FILE = _adopt_legacy(STATE_FILE, "storage_state.json")
 CONFIG_FILE = _adopt_legacy(CONFIG_FILE, "bridge_config.json")
 THREAD_REGISTRY_FILE = _adopt_legacy(THREAD_REGISTRY_FILE, "thread_registry.json")
 
+# Local-only files that must NEVER be sent to Muse (session cookies, private
+# thread IDs, config, logs). Matched case-insensitively by basename.
+IGNORED_LOCAL_FILES = {
+    "storage_state.json", "muse_relay_state.json",
+    "bridge_config.json", "muse_relay_config.json",
+    "thread_registry.json", "muse_relay_threads.json",
+    "claude_request_sample.json",
+    "muse_relay.log", "bridge_run.log",
+}
+IGNORED_LOCAL_SUFFIXES = (".session.json", ".cookie", ".cookies", ".token", ".log")
+
+
+def is_ignored_local_file(name: str) -> bool:
+    n = os.path.basename(name).lower()
+    if n in IGNORED_LOCAL_FILES:
+        return True
+    return any(n.endswith(s) for s in IGNORED_LOCAL_SUFFIXES)
+
 DEFAULT_PORT = 8765
 DEFAULT_TIMEOUT = 600
 POLL_INTERVAL_S = 0.5
