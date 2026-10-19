@@ -36,7 +36,9 @@ from .parser import (
     is_pure_listing_query,
     is_title_generation_query,
     is_workspace_promise,
+    MEDIA_EXTS,
     missing_claimed_paths,
+    _looks_textual,
     strip_system_tags,
 )
 from .prompts import (
@@ -71,14 +73,16 @@ def _extract_cwd(payload: Dict[str, Any], messages: List[dict]) -> str:
     return cwd
 
 
-def _parse_last_user(messages: List[dict]) -> Tuple[bool, List[str], List[str], str, Any]:
+def _parse_last_user(messages: List[dict]) -> Tuple[bool, List[str], List[str], List[dict], str, Any]:
     """Inspect the most recent user message.
 
-    Returns: (is_tool_result, prev_tool_outputs, executed_tool_names, last_user_msg, last_user_msg_obj)
+    Returns: (is_tool_result, prev_tool_outputs, executed_tool_names,
+              executed_tool_inputs, last_user_msg, last_user_msg_obj)
     """
     is_tool_result = False
     prev_tool_outputs: List[str] = []
     executed_tool_names: List[str] = []
+    executed_tool_inputs: List[dict] = []
     last_user_msg = ""
 
     last_user_msg_obj = None
@@ -117,10 +121,13 @@ def _parse_last_user(messages: List[dict]) -> Tuple[bool, List[str], List[str], 
                     for b in c:
                         if isinstance(b, dict) and b.get("type") == "tool_use":
                             executed_tool_names.append(b.get("name", ""))
+                            ti = b.get("input")
+                            if isinstance(ti, dict):
+                                executed_tool_inputs.append(ti)
                 if executed_tool_names:
                     break
 
-    return is_tool_result, prev_tool_outputs, executed_tool_names, last_user_msg, last_user_msg_obj
+    return is_tool_result, prev_tool_outputs, executed_tool_names, executed_tool_inputs, last_user_msg, last_user_msg_obj
 
 
 def _original_user_text(messages: List[dict]) -> str:
@@ -136,6 +143,63 @@ def _original_user_text(messages: List[dict]) -> str:
                 if txts:
                     orig = "\n".join(txts)
     return strip_system_tags(orig)
+
+
+def _verify_written_files(tool_inputs: List[dict], tool_results: str, cwd: str) -> str:
+    """Verify Write tool calls actually landed on disk before claiming success.
+
+    The old code returned a hardcoded "I have successfully created and updated
+    the requested file(s)" for every Write — which lied whenever the parser
+    emitted a wrong target (e.g. a text body written into a .mp4 path).
+    """
+    ok: List[str] = []
+    problems: List[str] = []
+    checked = 0
+    for ti in tool_inputs:
+        fp = str(ti.get("file_path", "") or "")
+        if not fp:
+            continue
+        checked += 1
+        if not os.path.isfile(fp):
+            problems.append(f"`{fp}` — NOT found on disk (the file was not created).")
+            continue
+        size = os.path.getsize(fp)
+        if size == 0:
+            problems.append(f"`{fp}` — exists but is empty (0 bytes).")
+            continue
+        ext = os.path.splitext(fp)[1].lower()
+        if ext in MEDIA_EXTS and _looks_textual(fp):
+            problems.append(
+                f"`{fp}` — extension `{ext}` is a media/binary type but the file content is TEXT; "
+                f"the content belongs in a code file (e.g. .html/.css/.js), not here."
+            )
+            continue
+        ok.append(f"`{fp}` ({size:,} bytes)")
+
+    if problems:
+        ok_note = f" Verified OK: {'; '.join(ok)}." if ok else ""
+        return (
+            "The Write tool did NOT complete correctly on disk. Problems:\n"
+            + "\n".join(f"- {p}" for p in problems)
+            + f"{ok_note}\n"
+            "Do NOT claim success for the failed items above. Suggest the user check the paths, "
+            "and emit a corrected Write (with the right file_path) if you can determine the intended target."
+        )
+    if not ok:
+        if checked == 0 and re.search(r"\berror\b|\bfailed\b|not found|denied|no such file", tool_results or "", re.I):
+            return (
+                "The Write tool reported an error — the file was NOT created. "
+                f"Tool output:\n{(tool_results or '')[:2000]}\n"
+                "Report this accurately; do NOT claim success."
+            )
+        return (
+            "The Write tool result did not include a verifiable file path, so I cannot confirm "
+            "the file was created. Please check the file exists before telling the user it is done."
+        )
+    return (
+        "I have successfully created and updated the requested file(s) on your computer:\n"
+        + "\n".join(f"- {line}" for line in ok)
+    )
 
 
 def run_daemon_server(mgr: BrowserManager, port: int) -> None:
@@ -260,7 +324,7 @@ def run_daemon_server(mgr: BrowserManager, port: int) -> None:
             msg_id = new_msg_id()
 
             cwd = _extract_cwd(payload, messages)
-            is_tool_result, prev_tool_outputs, executed_tool_names, last_user_msg, _ = _parse_last_user(messages)
+            is_tool_result, prev_tool_outputs, executed_tool_names, executed_tool_inputs, last_user_msg, _ = _parse_last_user(messages)
 
             if not last_user_msg and not is_tool_result:
                 self._send_json(400, {"error": "No user message found"})
@@ -328,7 +392,7 @@ def run_daemon_server(mgr: BrowserManager, port: int) -> None:
 
             if is_tool_result:
                 reply = self._handle_tool_result(
-                    messages, executed_tool_names, prev_tool_output, cwd, send_with_keepalive
+                    messages, executed_tool_names, executed_tool_inputs, prev_tool_output, cwd, send_with_keepalive
                 )
             else:
                 try:
@@ -351,13 +415,14 @@ def run_daemon_server(mgr: BrowserManager, port: int) -> None:
             self,
             messages: List[dict],
             executed_tool_names: List[str],
+            executed_tool_inputs: List[dict],
             prev_tool_output: str,
             cwd: str,
             send_with_keepalive,
         ) -> str:
             """Synthesize a reply after Claude Code executed a tool call we emitted."""
             if executed_tool_names and all(t in ("Write", "FileWrite") for t in executed_tool_names):
-                return "I have successfully created and updated the requested file(s) on your computer."
+                return _verify_written_files(executed_tool_inputs, prev_tool_output, cwd)
 
             if "Glob" in executed_tool_names:
                 cleaned_files = clean_file_list(prev_tool_output)
@@ -571,13 +636,21 @@ def run_daemon_server(mgr: BrowserManager, port: int) -> None:
 
             thought, tools_to_emit = detect_tool_calls(reply, tool_names, cwd, default_fname=default_fname)
             if not tools_to_emit and is_edit_request and target_file_info and ("Write" in tool_names or "FileWrite" in tool_names):
-                clean_sol = reply.strip()
-                m_fence = re.search(r"^```(?:[a-zA-Z0-9_\-]+)?\n+(.*?)\n+```$", clean_sol, flags=re.DOTALL)
-                if m_fence:
-                    clean_sol = m_fence.group(1).strip()
-                t_name = "Write" if "Write" in tool_names else "FileWrite"
-                thought = f"Updating `{target_file_info[0]}` with the solution on your computer."
-                tools_to_emit = [(t_name, {"file_path": target_file_info[1], "content": clean_sol})]
+                _tgt_ext = os.path.splitext(target_file_info[1])[1].lower()
+                if _tgt_ext in MEDIA_EXTS:
+                    print(
+                        f"[!] Skipping edit-request fallback: target `{target_file_info[1]}` has a media extension "
+                        f"({_tgt_ext}) — writing text into it would corrupt the file.",
+                        file=sys.stderr, flush=True,
+                    )
+                else:
+                    clean_sol = reply.strip()
+                    m_fence = re.search(r"^```(?:[a-zA-Z0-9_\-]+)?\n+(.*?)\n+```$", clean_sol, flags=re.DOTALL)
+                    if m_fence:
+                        clean_sol = m_fence.group(1).strip()
+                    t_name = "Write" if "Write" in tool_names else "FileWrite"
+                    thought = f"Updating `{target_file_info[0]}` with the solution on your computer."
+                    tools_to_emit = [(t_name, {"file_path": target_file_info[1], "content": clean_sol})]
 
             # Honesty guard: verify Muse's file-creation claims against the real disk.
             reply, tools_to_emit, thought, extracted_files = guard_false_completion(

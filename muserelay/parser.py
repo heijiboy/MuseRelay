@@ -83,10 +83,10 @@ def is_delete_all_files_query(text: str) -> bool:
     """Check if the prompt requests deleting all files in the current folder."""
     t = text.strip().lower()
     # E.g. "clear the directory", "empty the folder", "dọn sạch thư mục", "clean the folder"
-    if re.search(r"\b(?:clear|clean|wipe|empty|don|xoa|xoá|xóa|dọn)\b(?:\s+(?:sach|sạch))?\s+(?:out\s+)?(?:all\s+)?(?:the|this|các|tất cả)?\s*(?:folder|directory|dir|here|thư mục|tệp|file)\b", t):
+    if re.search(r"\b(?:clear|clean|wipe|empty|xoa|xoá|xóa|dọn)\b(?:\s+(?:sach|sạch))?\s+(?:out\s+)?(?:all\s+)?(?:the|this|các|tất cả)?\s*(?:folder|directory|dir|here|thư mục|tệp|file)\b", t):
         return True
     # E.g. "delete/remove all/the files in the folder/directory"
-    if re.search(r"\b(?:delete|remove|clear|clean|wipe|erase|empty|xoa|xoá|xóa|dọn|don)\b.*\b(?:all\s+)?(?:the\s+)?(?:files|everything|tệp|file|tất cả|hết|het)\b", t):
+    if re.search(r"\b(?:delete|remove|clear|clean|wipe|erase|empty|xoa|xoá|xóa|dọn)\b.*\b(?:all\s+)?(?:the\s+)?(?:files|everything|tệp|file|tất cả|hết|het)\b", t):
         return True
     if re.search(r"\b(?:delete|remove|xoa|xoá|xóa|dọn)\b\s+(?:all\s+)?(?:the\s+)?(?:files|tệp|file|tất cả(?:\s+các)?\s+(?:file|tệp))\b", t):
         return True
@@ -134,7 +134,7 @@ def detect_delete_intent(text: str, cwd: str, tool_names: set) -> Optional[Tuple
             return None
 
     # 2. Delete specific file(s) mentioned in prompt
-    is_delete_verb = bool(re.search(r"\b(?:delete|remove|rm|erase|del|unlink|xoa|xoá|xóa|dọn|don)\b", t))
+    is_delete_verb = bool(re.search(r"\b(?:delete|remove|rm|erase|del|unlink|xoa|xoá|xóa|dọn)\b", t))
     if is_delete_verb:
         existing_names = []
         try:
@@ -176,7 +176,7 @@ def is_file_list_query(p: str) -> bool:
     if p_lower in ("ls", "dir", "get-childitem", "pwd"):
         return True
     # If the user is asking to create, make, write, generate, transfer, save, delete, etc.
-    if re.search(r"\b(?:create|make|write|generate|add|edit|modify|update|delete|remove|clear|clean|wipe|erase|transfer|save|disk|workspace|build|develop|implement|tạo|viết|thêm|sửa|xóa|xoá|xoa|dọn|don|cập nhật|chạy)\b", p_lower):
+    if re.search(r"\b(?:create|make|write|generate|add|edit|modify|update|delete|remove|clear|clean|wipe|erase|transfer|save|disk|workspace|build|develop|implement|tạo|viết|thêm|sửa|xóa|xoá|xoa|dọn|cập nhật|chạy)\b", p_lower):
         return False
     # If the user is asking for file contents/code, it's a content query, not a pure listing query
     if any(w in p_lower for w in ("content", "contents", "inside", "code", "text", "body")):
@@ -400,6 +400,148 @@ LANG_EXT_MAP: Dict[str, set] = {
 }
 
 ALL_LANG_TAGS: set = set(LANG_EXT_MAP.keys()) | {alias for aliases in LANG_EXT_MAP.values() for alias in aliases} | {"shell", "diff", "patch", "dockerfile", "xml", "toml"}
+
+# Binary/media extensions: text/code content must NEVER be written into these.
+MEDIA_EXTS: set = {
+    ".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".wmv", ".flv",
+    ".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac",
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".bmp", ".ico", ".tif", ".tiff",
+    ".pdf", ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz",
+    ".exe", ".dll", ".so", ".dylib", ".bin", ".apk", ".msi",
+    ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    ".ttf", ".otf", ".woff", ".woff2", ".eot",
+}
+
+
+def sniff_code_ext(content: str) -> str:
+    """Best-effort: which code/file extension does this text content actually look like?"""
+    s = content.lstrip()[:400].lower()
+    if not s:
+        return ""
+    if s.startswith("<!doctype html") or s.startswith("<html"):
+        return ".html"
+    if s.startswith("<?xml"):
+        return ".xml"
+    if s.startswith("<svg"):
+        return ".svg"
+    if s.startswith("{") or s.startswith("["):
+        return ".json"
+    if s.startswith("#!"):
+        return ".py" if "python" in s[:80] else ".sh"
+    if re.match(r"^[.#@a-z][\w\s.#>:,;,*+=\"'()\[\]-]*\{", s):
+        return ".css"
+    if re.search(r"\b(?:function|const|let|var)\b|=>", s[:200]):
+        return ".js"
+    if re.match(r"^(?:import|from|def|class)\s", s, re.M):
+        return ".py"
+    return ""
+
+
+def _looks_textual(path: str) -> bool:
+    """True when the file on disk decodes as UTF-8 text (i.e. NOT real binary)."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(512)
+        head.decode("utf-8")
+        return True
+    except Exception:
+        return False
+
+
+def _find_local_file(cwd: str, fname: str) -> Optional[str]:
+    """Resolve a referenced filename under cwd (root first, then shallow walk).
+
+    When the extension is a media type and multiple candidates exist, prefer the
+    one that is REAL binary (not text masquerading with a media extension).
+    """
+    if not cwd or not fname:
+        return None
+    base = os.path.basename(fname)
+    direct = os.path.join(cwd, base)
+    matches: List[str] = []
+    if os.path.isfile(direct):
+        matches.append(direct)
+    for root, dirs, files in os.walk(cwd):
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d.lower() not in {"node_modules", "__pycache__", ".git"}][:40]
+        depth = root[len(cwd):].count(os.sep)
+        if depth >= 3:
+            dirs[:] = []
+            continue
+        for f in files:
+            if f.lower() == base.lower():
+                p = os.path.join(root, f)
+                if os.path.normcase(p) not in {os.path.normcase(m) for m in matches}:
+                    matches.append(p)
+        if len(matches) >= 20:
+            break
+    if not matches:
+        return None
+    media = [m for m in matches if os.path.splitext(m)[1].lower() in MEDIA_EXTS]
+    real_binary = [m for m in media if not _looks_textual(m)]
+    if real_binary:
+        return real_binary[0]
+    return matches[0]
+
+
+def retarget_media_write(fp: str, content: str, reply: str, cwd: str, default_fname: str = "") -> str:
+    """Fix a Write whose target has a media/binary extension but text content.
+
+    Returns the corrected absolute path, or "" when no sane target exists
+    (caller must then DROP the tool call instead of corrupting a media file).
+    """
+    desired = sniff_code_ext(content)
+    if not desired:
+        return ""
+    # 1) A path with the correct extension explicitly mentioned in Muse's reply
+    #    (e.g. "File cập nhật: E:\\...\\website\\index.html").
+    #    Lookbehind forbids starting mid-token (3D_View_test\... -> D_View_test\...).
+    m = re.search(
+        r"(?<![\\/\w.\-])([A-Za-z]:[\\/][\w.\-\\\/]+|[\w.\-]+[\\/][\w.\-\\/]+)"
+        + re.escape(desired),
+        reply,
+        flags=re.IGNORECASE,
+    )
+    if m:
+        cand = m.group(1) + desired
+        if re.match(r"^[A-Za-z]:", cand) or cand.startswith(("\\", "/")):
+            return os.path.normpath(cand)
+        return os.path.normpath(os.path.join(cwd, cand))
+    # 2) The filename Muse was told to produce (default_fname) matches the sniffed type.
+    if default_fname and os.path.splitext(default_fname)[1].lower() == desired:
+        return default_fname if os.path.isabs(default_fname) else os.path.normpath(os.path.join(cwd, default_fname))
+    # 3) Same basename, corrected extension, in cwd.
+    base = os.path.splitext(os.path.basename(fp))[0] + desired
+    return os.path.normpath(os.path.join(cwd, base))
+
+
+def sanitize_write_media_targets(
+    tools: List[Tuple[str, dict]], reply: str, cwd: str, default_fname: str, thoughts: List[str]
+) -> List[Tuple[str, dict]]:
+    """Final choke point: retarget or drop Write calls that would corrupt media files."""
+    out: List[Tuple[str, dict]] = []
+    for t_name, t_input in tools:
+        if t_name in ("Write", "FileWrite") and isinstance(t_input, dict):
+            fp = str(t_input.get("file_path", ""))
+            content = str(t_input.get("content", ""))
+            ext = os.path.splitext(fp)[1].lower()
+            if ext in MEDIA_EXTS and content:
+                new_fp = retarget_media_write(fp, content, reply, cwd, default_fname=default_fname)
+                if not new_fp:
+                    thoughts.append(
+                        f"[Harness] Refused to write text/code content into media file `{fp}` "
+                        f"(a binary extension cannot hold text). Nothing was written for it."
+                    )
+                    print(f"[*] Media guard: dropped Write to `{fp}` (text content, media ext, no better target).", file=sys.stderr, flush=True)
+                    continue
+                if os.path.normcase(os.path.normpath(new_fp)) != os.path.normcase(os.path.normpath(fp)):
+                    thoughts.append(
+                        f"[Harness] Corrected file target `{fp}` → `{new_fp}` "
+                        f"(Muse labelled text content with a media extension)."
+                    )
+                    print(f"[*] Media guard: retargeted Write `{fp}` → `{new_fp}`.", file=sys.stderr, flush=True)
+                    t_input = dict(t_input, file_path=new_fp)
+        out.append((t_name, t_input))
+    return out
 
 
 def is_valid_card_ending(fname: str, tag: str) -> bool:
@@ -952,6 +1094,155 @@ def _sanitize_tool_input(t_name: str, t_input: Any, cwd: str, allowed: set) -> O
     return t_input
 
 
+def detect_prose_file_ops(reply: str, cwd: str, tool_names: set) -> List[Tuple[str, dict]]:
+    """Detect move/copy/mkdir instructions written as prose or loose command lines.
+
+    Muse often describes file moves in natural language ("chuyển video vào
+    website\\asset\\gioi-thieu.mp4") or as bare command lines ending with a
+    period. The generic bare-command branch requires no trailing punctuation
+    and misses both, so the file never actually moves while Muse (and the user)
+    believe it did. This emits a real PowerShell/Bash tool call — but ONLY when
+    the source file resolves to something that exists on disk.
+    """
+    if not cwd or ("PowerShell" not in tool_names and "Bash" not in tool_names):
+        return []
+    ps = "PowerShell" in tool_names
+    # Fenced commands are handled by the generic fence branch — don't double-emit.
+    text = re.sub(r"```.*?```", "\n", reply, flags=re.DOTALL)
+    tools: List[Tuple[str, dict]] = []
+    seen: set = set()
+
+    def _clean(tok: str) -> str:
+        return tok.strip(" \t\"'`<>[](){}.,;:!?")
+
+    def _looks_pathish(tok: str) -> bool:
+        if not tok or len(tok) > 260:
+            return False
+        if any(c in tok for c in "*?<>|"):
+            return False
+        has_sep = ("\\" in tok) or ("/" in tok) or bool(re.match(r"^[A-Za-z]:", tok))
+        has_ext = bool(re.search(r"\.[A-Za-z0-9]{1,6}$", tok))
+        return has_sep or has_ext
+
+    def _resolve(tok: str) -> Optional[str]:
+        t = _clean(tok)
+        if not t:
+            return None
+        ext = os.path.splitext(t)[1].lower()
+        if re.match(r"^[A-Za-z]:", t) or t.startswith(("\\", "/")):
+            if os.path.isfile(t):
+                # Media ext: prefer a real binary even if a junk text file with the
+                # same name sits closer (the gioi-thieu-website.mp4 HTML-junk bug).
+                if ext in MEDIA_EXTS and _looks_textual(t):
+                    real = _find_local_file(cwd, os.path.basename(t))
+                    if real and not _looks_textual(real):
+                        return real
+                return t
+            return None
+        if ext in MEDIA_EXTS:
+            found = _find_local_file(cwd, os.path.basename(t))
+            if found:
+                return found
+        p = os.path.join(cwd, t)
+        if os.path.isfile(p):
+            return os.path.normpath(p)
+        return _find_local_file(cwd, os.path.basename(t))
+
+    def _dst_for(src: str, dst_tok: str) -> Optional[str]:
+        d = _clean(dst_tok)
+        if not d:
+            return None
+        if not re.match(r"^[A-Za-z]:", d) and not d.startswith(("\\", "/")):
+            d = os.path.join(cwd, d)
+        d = os.path.normpath(d)
+        if d.endswith(("\\", "/")) or os.path.isdir(d) or not os.path.splitext(d)[1]:
+            d = os.path.normpath(os.path.join(d, os.path.basename(src)))
+        return d
+
+    def _emit(kind: str, src: Optional[str], dst: Optional[str]) -> None:
+        if not src or not dst:
+            return
+        if os.path.normcase(os.path.normpath(src)) == os.path.normcase(os.path.normpath(dst)):
+            return
+        key = (kind, os.path.normcase(src), os.path.normcase(dst))
+        if key in seen:
+            return
+        seen.add(key)
+        parent = os.path.dirname(dst)
+        if parent and not os.path.isdir(parent):
+            mk = f"New-Item -ItemType Directory -Force -Path '{parent}'" if ps else f"mkdir -p '{parent}'"
+            tools.append(("PowerShell" if ps else "Bash", {"command": mk}))
+        if kind == "copy":
+            cmd = f"Copy-Item -LiteralPath '{src}' -Destination '{dst}' -Force" if ps else f"cp -f '{src}' '{dst}'"
+        else:
+            cmd = f"Move-Item -LiteralPath '{src}' -Destination '{dst}' -Force" if ps else f"mv -f '{src}' '{dst}'"
+        tools.append(("PowerShell" if ps else "Bash", {"command": cmd}))
+        print(f"[*] Prose file-op detected: {kind} {src} -> {dst}", file=sys.stderr, flush=True)
+
+    # --- 1) Loose command lines (may end with a period, be backticked, etc.) ---
+    line_re = re.compile(
+        r"^[`\"']?\s*(move|copy|xcopy|robocopy|ren(?:ame)?)\s+(.+)$",
+        re.IGNORECASE,
+    )
+    dir_re = re.compile(r"^(?:`)?\s*(mkdir|md)\s+(.+)$", re.IGNORECASE)
+    for raw_line in text.splitlines():
+        ln = raw_line.strip()
+        if not ln:
+            continue
+        m = line_re.match(ln)
+        if m:
+            verb = m.group(1).lower()
+            # Drop filler prepositions so "copy a.html to b.html" doesn't use "to" as dst.
+            fillers = {"to", "into", "in", "on", "from", "vào", "sang", "tới", "tại", "từ", "của", "đến"}
+            args = [_clean(a) for a in m.group(2).split() if not a.startswith(("-", "/"))]
+            args = [a for a in args if a and a.lower() not in fillers]
+            if len(args) >= 2 and _looks_pathish(args[0]):
+                src = _resolve(args[0])
+                dst = _dst_for(src, args[1]) if src else None
+                _emit("copy" if verb.startswith("copy") or verb.startswith("x") or verb.startswith("robo") else "move", src, dst)
+            continue
+        m = dir_re.match(ln)
+        if m:
+            tok = _clean(m.group(2).split()[0])
+            if tok and not tok.startswith(("-", "/")):
+                d = tok if (re.match(r"^[A-Za-z]:", tok) or "\\" in tok or "/" in tok) else os.path.join(cwd, tok)
+                key = ("mkdir", os.path.normcase(d), "")
+                if key not in seen:
+                    seen.add(key)
+                    cmd = f"New-Item -ItemType Directory -Force -Path '{os.path.normpath(d)}'" if ps else f"mkdir -p '{os.path.normpath(d)}'"
+                    tools.append(("PowerShell" if ps else "Bash", {"command": cmd}))
+
+    # --- 2) Natural-language instructions (EN + VI) ---
+    # e.g. "chuyển video gioi-thieu-website.mp4 vào website\\asset\\gioi-thieu.mp4"
+    #      "move asset/video.mp4 into website/asset/"
+    #      "copy index.html sang backup/"
+    verb_re = re.compile(
+        r"\b(?:move|copy|xcopy|robocopy|chuyể[nđ]|di\s+chuyể[nđ]|đưa|sao\s+chép)\b",
+        re.IGNORECASE,
+    )
+    dir_word_re = re.compile(r"\b(?:v[àa]o|to|into|sang|t[ớo]i)\b", re.IGNORECASE)
+    for sent in re.split(r"\n|(?<=[.!?…])\s+", text):
+        if not verb_re.search(sent) or not dir_word_re.search(sent):
+            continue
+        is_copy = bool(re.search(r"\b(?:copy|xcopy|robocopy|sao\s+chép)\b", sent, re.IGNORECASE))
+        dm = dir_word_re.search(sent)
+        assert dm is not None
+        before, after = sent[: dm.end()], sent[dm.end():]
+        after_toks = [t for t in (_clean(x) for x in after.split()) if _looks_pathish(t)]
+        if not after_toks:
+            continue
+        src = None
+        for cand in reversed([t for t in (_clean(x) for x in before.split()) if _looks_pathish(t)]):
+            src = _resolve(cand)
+            if src:
+                break
+        if not src:
+            continue
+        _emit("copy" if is_copy else "move", src, _dst_for(src, after_toks[0]))
+
+    return tools
+
+
 def detect_tool_calls(reply: str, tool_names: set, cwd: str, default_fname: str = "") -> Tuple[str, List[Tuple[str, dict]]]:
     """
     Detect if Muse's reply represents actions to execute on the local computer
@@ -1118,6 +1409,23 @@ def detect_tool_calls(reply: str, tool_names: set, cwd: str, default_fname: str 
 
         # Normal text block (thought / commentary)
         thoughts.append(block)
+
+    # 0d. Natural-language / loose-line file operations (move/copy/mkdir in EN/VI).
+    # Muse frequently *describes* the move in prose instead of emitting a fence;
+    # without this the file silently never moves while everyone believes it did.
+    prose_ops = detect_prose_file_ops(clean_reply, cwd, tool_names)
+    if prose_ops:
+        existing_cmds = {t[1].get("command", "") for t in tools if isinstance(t[1], dict)}
+        for t_name, t_input in prose_ops:
+            if t_input.get("command", "") not in existing_cmds:
+                tools.append((t_name, t_input))
+        if not thoughts:
+            thoughts.append("Executing the file operations Muse described in its reply on your computer.")
+
+    # 0e. Media guard: never write text/code content into a binary extension
+    # (the gioi-thieu-website.mp4-contains-HTML bug). Retarget or drop.
+    if tools:
+        tools = sanitize_write_media_targets(tools, clean_reply, cwd, default_fname, thoughts)
 
     # 0b. Fallback: ONLY check if Muse reported its own remote server workspace directories
     # IF NO other actions/tools were generated!
