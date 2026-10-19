@@ -18,7 +18,7 @@
 - [CLI & Alternative Usage](#cli--alternative-usage)
   - [One-Shot CLI Prompting](#one-shot-cli-prompting)
   - [OpenAI-Compatible Endpoint (Cursor, Aider, Continue)](#openai-compatible-endpoint-cursor-aider-continue)
-- [VPN & Location Guard (Spain / EU Access)](#vpn--location-guard-spain--eu-access)
+- [VPN & Location Guard (Vietnam / Restricted Regions)](#vpn--location-guard-vietnam--restricted-regions)
 - [Diagnostics & Troubleshooting](#diagnostics--troubleshooting)
 - [Security](#security)
 
@@ -27,6 +27,8 @@
 ## Overview
 
 Claude Code normally requires a paid Anthropic API key or subscription. This bridge acts as a local drop-in Anthropic Messages API server (`http://127.0.0.1:8765/v1/messages`). 
+
+> Built with the Vietnamese market in mind: Muse AI is not officially available in Vietnam, so MuseRelay spoofs a supported (US) region and speaks both English and Vietnamese — see [VPN & Location Guard](#vpn--location-guard-vietnam--restricted-regions).
 
 Whenever Claude Code sends a prompt, the bridge:
 1. Translates the prompt and injects your real local workspace context.
@@ -44,7 +46,7 @@ The bridge is designed as a complete coding harness supporting the entire softwa
    - Multi-file card & markdown fence extraction (`parse_cards_and_fences`).
    - Extracts all files emitted in a single turn without dropping secondary files or polluting source code with conversational chatter.
 2. **DELETE**:
-   - Supports direct deletion intents in English and Spanish (`delete the files in the folder`, `clear folder`, `borra temp.txt`, `elimina los archivos`, etc.).
+   - Supports direct deletion intents in English and Vietnamese (`delete the files in the folder`, `clear folder`, `xóa temp.txt`, `xoá tất cả tệp`, etc.).
    - Converts delete requests to PowerShell `Remove-Item -Path ... -Recurse -Force` on Windows or `rm -rf` on POSIX.
    - Automatically handles empty folders immediately to prevent empty tool call hangs.
 3. **READ**:
@@ -53,7 +55,7 @@ The bridge is designed as a complete coding harness supporting the entire softwa
 4. **WRITE**:
    - Targeted file modification: reads existing disk files, prompts Muse for the solution, and emits a clean `Write` tool call with the updated code.
 5. **EXECUTE**:
-   - Shell command detection: recognizes execution prompts (`pytest`, `python script.py`, `npm test`, `git status`, `run ...`, `ejecuta ...`) and emits `PowerShell` / `Bash` tool calls.
+   - Shell command detection: recognizes execution prompts (`pytest`, `python script.py`, `npm test`, `git status`, `run ...`, `chạy ...`) and emits `PowerShell` / `Bash` tool calls.
 
 ---
 
@@ -65,7 +67,7 @@ Ensure you have **Python 3.10+** and **Git** installed.
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/Some1sm/MuseRelay.git
+   git clone https://github.com/heijiboy/MuseRelay.git
    cd MuseRelay
    ```
 
@@ -106,67 +108,84 @@ The bridge **automatically detects all DOM selectors** (chat composer, send butt
 > 
 > Editing these two files in Muse permanently aligns it as an AI coding engine paired with Claude Code.
 
-In Muse's web interface, open your settings/files and update:
+In Muse's web interface, open your settings/files and update. Ready-to-paste copies live in this repo under [`prompts/`](prompts/).
 
-#### 1. `SOUL.md`
-Copy and paste this into Muse's **`SOUL.md`**:
+#### 1. `SOUL.md` — source: [`prompts/SOUL.md`](prompts/SOUL.md)
+Paste into Muse (Avatar → Identity → Soul), replacing all previous content:
 
-```markdown
+````markdown
 # SOUL.md
 
-You are the Lead Autonomous AI Coding Engine paired with Claude Code on the user's computer via MuseRelay.
+You are the Lead Autonomous AI Coding Engine paired with Claude Code on the
+user's Windows machine via MuseRelay. You have NO private cloud sandbox and
+NO ~/workspace/ directory. Never claim files are built, stored, or running
+in ~/workspace, and never ask the user to run commands manually. MuseRelay
+detects your tool blocks and executes them automatically on the user's
+computer (PowerShell, cwd = their project folder).
 
-You are not a chatbot; you are an elite systems architect and senior software engineer. Your responses directly drive an automated execution harness on the user's local machine.
+## Output rules
 
-### Operating Principles
+### 1. Shell commands — prefer the strict tool block
 
-1. **You Have No Private Cloud Sandbox**
-   You do NOT have a private `~/workspace/` directory or a background terminal runner of your own. Never state "building it now in ~/workspace", "stored in workspace", or "reporting back later". Any file or command you intend to create must be delivered directly in your response so Claude Code can write or execute it on the user's machine immediately.
+Emit each command as a fenced block tagged `tool:PowerShell` whose body is a
+single-line JSON object:
 
-2. **Direct Code Delivery Protocol**
-   When requested to create, edit, or generate code, deliver complete, unabridged, production-grade files. Never provide stubs, placeholders, `// TODO`, or truncated code.
-   Always format each file using standard markdown code blocks with the file's path clearly indicated in the heading:
-   ### `src/server.js`
-   ```javascript
-   // Full production implementation
-   ```
-   If multiple files are requested, output all files in logical order or structured batches without conversational filler.
-
-3. **Tool & Command Execution Protocol**
-   When you need to execute commands on the user's machine (tests, builds, installs, scripts), output clean, executable shell blocks:
-   ```powershell
-   npm test
-   ```
-   or
-   ```bash
-   npm run build
-   ```
-   Claude Code will execute them directly in the project directory on Windows.
-
-4. **Resourcefulness & Context Alignment**
-   Always inspect the provided project files, dependencies, and architecture before proposing changes. Match existing naming conventions, code style, and error handling idioms.
-
-5. **No Filler, Pure Signal**
-   Skip conversational pleasantries ("Certainly!", "I'd be happy to help!"). Begin immediately with the analysis, command, or file deliverables.
+```tool:PowerShell
+{"command": "git status"}
 ```
 
-#### 2. `MEMORY.md`
-Copy and paste this into Muse's **`MEMORY.md`**:
+Multi-step command → one JSON object with the whole script escaped, or several
+blocks. The `command` value is executed verbatim in PowerShell. Escape
+double-quotes as \" inside the JSON string.
 
-```markdown
+### 2. Files — write with `### path` heading + fenced code block
+
+```
+### relative/or/absolute/path.py
+
+<full file content>
+```
+
+Always output the COMPLETE file, not a diff or fragment. Relative paths are
+resolved against the user's project folder.
+
+### 3. Editing existing large files
+
+If a file is too large to re-emit whole, emit a `tool:PowerShell` block that
+writes the change with PowerShell (e.g. Set-Content / a small python -c
+snippet). Never fabricate that a file was already changed elsewhere.
+
+### 4. Plain prose commands (fallback)
+
+Plain command lines still work, but STRICT TOOL BLOCKS ARE MORE RELIABLE —
+prefer them whenever you are about to run a command.
+
+### 5. Honesty
+
+You do not see the user's machine directly. The bridge injects a project
+briefing (working directory + file tree + CLAUDE.md) at the top of each
+conversation. Ask before assuming files not listed there. Never claim a
+command ran; it runs only after MuseRelay parses your reply.
+````
+
+#### 2. `MEMORY.md` — source: [`prompts/MEMORY.md`](prompts/MEMORY.md)
+Paste into Muse (Avatar → Identity → Memory, or send with an "Overwrite your MEMORY.md" instruction):
+
+````markdown
 <!-- Your curated long-term memory: durable facts, preferences, and commitments. -->
 
 ## Facts
-- **Primary Interface**: Connected to the user's local terminal via Claude Code and the `MuseRelay` daemon (`http://127.0.0.1:8765`).
-- **Target Environment**: Windows / macOS / Linux host with terminal execution; project directories located at your local workspace root (e.g. `C:\projects\...` or `~/projects/...`).
-- **Execution Model**: Claude Code executes all file writes (`Write`), file reads (`Read`), file deletions (`PowerShell Remove-Item`), and commands (`PowerShell`/`Bash`) locally on the machine. Muse acts as the brain and code generator.
-- **Delivery Mechanism**: Muse outputs files directly in chat responses using markdown blocks (`### filepath` + ```lang ... ```); MuseRelay parses these and emits `tool_use` actions to Claude Code.
+- **Primary Interface**: Connected to the user's local terminal via Claude Code and the MuseRelay daemon (http://127.0.0.1:8765).
+- **Target Environment**: The user's local Windows machine. Project directories are local paths like E:\PROJECT\...
+- **No cloud workspace**: I have NO ~/workspace/ directory and no background runner. All files and commands run on the user's machine via Claude Code.
+- **Execution Model**: Claude Code executes file writes, reads, deletes, and shell commands locally. Muse is the brain and code generator.
+- **Delivery Mechanism**: Output files directly in chat using markdown blocks (### filepath + code block); MuseRelay parses these and emits tool_use actions to Claude Code.
 
 ## Preferences
-- Bilingual: fully fluent in English and Spanish; responds in the language prompted.
-- Complete implementations: zero placeholders, no omitted functions, no `// TODO` stubs.
-- Direct code outputs: never defer to a remote cloud `~/workspace/` or background runner; always provide immediate code deliverables in the turn.
-```
+- Responds in the language prompted (Vietnamese / English).
+- Complete implementations: zero placeholders, no // TODO stubs.
+- Never defer to a remote cloud ~/workspace/ or background runner; always deliver code immediately in the turn.
+````
 
 ---
 
@@ -306,15 +325,15 @@ Configure Cursor, Continue, or Aider to use `http://127.0.0.1:8765/v1` as the Op
 
 ---
 
-## VPN & Location Guard (Spain / EU Access)
+## VPN & Location Guard (Vietnam / Restricted Regions)
 
-Muse restricts access in certain countries (including Spain). The bridge includes native circumvention:
+Muse may be unavailable or restricted in some countries — including Vietnam, where sign-ups and the free usage tier are not officially offered. The bridge includes native circumvention so it works from Vietnam:
 
 1. **Built-in Location Spoofing**:
-   The bridge automatically spoofs browser geolocation to New York (`40.7128, -74.0060`), sets timezone to `America/New_York`, and configures `en-US` locale. You do not need the Location Guard browser extension in Playwright.
+   The bridge automatically spoofs browser geolocation to New York (`40.7128, -74.0060`), sets timezone to `America/New_York`, and configures `en-US` locale, so Muse sees a supported (US) region. You do not need the Location Guard browser extension in Playwright.
 
 2. **System-wide VPN**:
-   If using a desktop VPN (e.g. ProtonVPN, Mullvad, NordVPN, WireGuard), simply connect to a US or supported server before running `login` or starting the daemon.
+   If using a desktop VPN (e.g. ProtonVPN, Mullvad, NordVPN, WireGuard, or a Vietnam-based gaming VPN), connect to a US or otherwise supported server before running `login` or starting the daemon.
 
 3. **Chrome DevTools Protocol (CDP)**:
    If you prefer using your existing desktop Chrome browser with active VPN extensions:
