@@ -82,18 +82,19 @@ def is_folder_analysis_query(text: str) -> bool:
 def is_delete_all_files_query(text: str) -> bool:
     """Check if the prompt requests deleting all files in the current folder."""
     t = text.strip().lower()
-    # E.g. "clear the directory", "empty the folder", "vaciar la carpeta", "clean the folder"
-    if re.search(r"\b(?:clear|clean|wipe|empty|vaciar|limpiar)\b\s+(?:out\s+)?(?:all\s+)?(?:the|this|la|el)?\s*(?:folder|directory|dir|carpeta|here)\b", t):
+    # E.g. "clear the directory", "empty the folder", "dọn sạch thư mục", "clean the folder"
+    if re.search(r"\b(?:clear|clean|wipe|empty|don|xoa|xoá|xóa|dọn)\b(?:\s+(?:sach|sạch))?\s+(?:out\s+)?(?:all\s+)?(?:the|this|các|tất cả)?\s*(?:folder|directory|dir|here|thư mục|tệp|file)\b", t):
         return True
     # E.g. "delete/remove all/the files in the folder/directory"
-    if re.search(r"\b(?:delete|remove|clear|clean|wipe|erase|empty|borra|borrar|elimina|eliminar|vaciar|limpiar)\b.*\b(?:all\s+)?(?:the\s+|los\s+)?(?:files|everything|todos|archivos)\b", t):
+    if re.search(r"\b(?:delete|remove|clear|clean|wipe|erase|empty|xoa|xoá|xóa|dọn|don)\b.*\b(?:all\s+)?(?:the\s+)?(?:files|everything|tệp|file|tất cả|hết|het)\b", t):
         return True
-    if re.search(r"\b(?:delete|remove|borra|borrar|elimina|eliminar)\b\s+(?:all\s+)?(?:the\s+|los\s+)?(?:files|archivos)\b", t):
+    if re.search(r"\b(?:delete|remove|xoa|xoá|xóa|dọn)\b\s+(?:all\s+)?(?:the\s+)?(?:files|tệp|file|tất cả(?:\s+các)?\s+(?:file|tệp))\b", t):
         return True
     if t in (
         "delete files", "delete all files", "clean folder", "clear folder", "empty folder",
         "delete the files in the folder", "delete the files in this folder",
-        "borra los archivos de la carpeta", "borra los archivos", "borra todo", "elimina todo",
+        "xóa các file", "xoá các file", "xóa hết", "xóa tất cả file", "xoá tất cả tệp",
+        "dọn sạch thư mục", "xóa sạch thư mục", "xóa hết file", "xoa het", "xoa cac file", "don sach thu muc",
         "clear the directory", "empty the directory", "empty directory", "clear directory"
     ):
         return True
@@ -133,7 +134,7 @@ def detect_delete_intent(text: str, cwd: str, tool_names: set) -> Optional[Tuple
             return None
 
     # 2. Delete specific file(s) mentioned in prompt
-    is_delete_verb = bool(re.search(r"\b(?:delete|remove|rm|erase|del|unlink|borra|borrar|elimina|eliminar|quitar)\b", t))
+    is_delete_verb = bool(re.search(r"\b(?:delete|remove|rm|erase|del|unlink|xoa|xoá|xóa|dọn|don)\b", t))
     if is_delete_verb:
         existing_names = []
         try:
@@ -175,7 +176,7 @@ def is_file_list_query(p: str) -> bool:
     if p_lower in ("ls", "dir", "get-childitem", "pwd"):
         return True
     # If the user is asking to create, make, write, generate, transfer, save, delete, etc.
-    if re.search(r"\b(?:create|make|write|generate|add|edit|modify|update|delete|remove|clear|clean|wipe|erase|transfer|save|disk|workspace|build|develop|implement|borra|borrar|elimina|eliminar|vaciar)\b", p_lower):
+    if re.search(r"\b(?:create|make|write|generate|add|edit|modify|update|delete|remove|clear|clean|wipe|erase|transfer|save|disk|workspace|build|develop|implement|tạo|viết|thêm|sửa|xóa|xoá|xoa|dọn|don|cập nhật|chạy)\b", p_lower):
         return False
     # If the user is asking for file contents/code, it's a content query, not a pure listing query
     if any(w in p_lower for w in ("content", "contents", "inside", "code", "text", "body")):
@@ -186,6 +187,9 @@ def is_file_list_query(p: str) -> bool:
     if re.search(r"\b(?:what|show|list|see|tell me|display|check|find|view|output)\b.*\b(?:files|folders|directory contents|workspace contents)\b", p_lower):
         return True
     if re.search(r"\b(?:what files|which files|list files|show files)\b", p_lower):
+        return True
+    # Vietnamese listing: "liệt kê file", "xem danh sách tệp", "cho tôi xem các file"
+    if re.search(r"\b(?:liệt kê|liet ke|xem|hiển thị|hien thi|danh sách|danh sach|cho (?:tôi|toi) (?:xem|biet|biết))\b.*\b(?:file|tệp|thư mục|folder)\b", p_lower):
         return True
     return False
 
@@ -214,7 +218,7 @@ def _detect_intent_tool_call(user_msg: str, tool_names: set, cwd: str) -> Option
 
     # 2. Read / inspect of a specific file on the user's computer
     m_read = re.search(
-        r"\b(?:read|cat|view|inspect|check|open|show(?:\s+me)?|what(?:'s|\s+is)\s+(?:in|inside))\s+(?:the\s+)?(?:contents?\s+of\s+)?(?:file\s+)?`?([a-zA-Z0-9_\-\./\\]+\.[a-zA-Z0-9_]+)`?",
+        r"\b(?:read|cat|view|inspect|check|open|show(?:\s+me)?|what(?:'s|\s+is)\s+(?:in|inside)|đọc|doc|xem|mở|mo)\s+(?:the\s+)?(?:contents?\s+of\s+)?(?:nội dung\s+|noi dung\s+)?(?:file\s+|tệp\s+|tep\s+)?`?([a-zA-Z0-9_\-\./\\]+\.[a-zA-Z0-9_]+)`?",
         clean_msg,
         flags=re.IGNORECASE,
     )
@@ -226,7 +230,7 @@ def _detect_intent_tool_call(user_msg: str, tool_names: set, cwd: str) -> Option
 
     # 3. Direct execution of a command
     m_run = re.search(
-        r"^(?:(?:run|execute|ejecuta|ejecutar|corre|correr)\s+(?:(?:the\s+)?command\s+|el\s+comando\s+)?)?(?:`([^`]+)`|\"([^\"]+)\"|((?:python|python3|py|git|pytest|npm|node|cargo|go|gcc|g\+\+|dotnet|make|pip)\s+[^\n\r]+|pytest))\s*$",
+        r"^(?:(?:run|execute|chay|chạy|thực thi|thuc thi)\s+(?:(?:the\s+)?command\s+|lệnh\s+)?)?(?:`([^`]+)`|\"([^\"]+)\"|((?:python|python3|py|git|pytest|npm|node|cargo|go|gcc|g\+\+|dotnet|make|pip)\s+[^\n\r]+|pytest))\s*$",
         clean_msg,
         flags=re.IGNORECASE,
     )
@@ -411,7 +415,7 @@ def is_workspace_promise(text: str, default_fname: str = "") -> bool:
 # False-completion guard: Muse claims files it never delivered
 # ---------------------------------------------------------------------------
 
-# EN / ES / VI wording that turns a path mention into a "I created/saved this" claim.
+# EN / VI wording that turns a path mention into a "I created/saved this" claim.
 _CLAIM_PHRASE_RE = re.compile(
     r"(?:"
     r"đã\s*(?:lưu|tạo|ghi|viết|hoàn\s*thành|xong|sẵn\s*sàng)"
@@ -419,7 +423,7 @@ _CLAIM_PHRASE_RE = re.compile(
     r"|tạo\s*(?:xong|tại|trong|ra|được)"
     r"|xong\b|sẵn\s*sàng"
     r"|\b(?:saved|created|stored|written|generated|done|ready)\b"
-    r"|\b(?:listo|guardado|creado)\b"
+    r"|\b(?:hoàn\s*thành|đã\s*(?:tạo|lưu|ghi|xóa|xoá)|lưu\s*xong)\b"
     r")",
     re.IGNORECASE,
 )
@@ -1078,7 +1082,7 @@ def detect_tool_calls(reply: str, tool_names: set, cwd: str, default_fname: str 
             continue
 
         # Check if Muse text states it deleted or wants to delete existing files in cwd
-        m_del = re.findall(r"\b(?:delete|deleted|remove|removed|deleting|removing|borrar|borrado|eliminar|eliminado)\s+[`\"]?([a-zA-Z0-9_\-\./\\]+\.[a-zA-Z0-9_]+)[`\"]?", block, flags=re.IGNORECASE)
+        m_del = re.findall(r"\b(?:delete|deleted|remove|removed|deleting|removing|xoa|xoá|xóa|đã\s*xóa|đã\s*xoá)\s+[`\"]?([a-zA-Z0-9_\-\./\\]+\.[a-zA-Z0-9_]+)[`\"]?", block, flags=re.IGNORECASE)
         if m_del and ("PowerShell" in tool_names or "Bash" in tool_names):
             del_paths = []
             for fn in m_del:
