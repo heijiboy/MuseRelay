@@ -383,8 +383,9 @@ Muse may be unavailable or restricted in some countries — including Vietnam, w
 
 ## Credits
 
-MuseRelay is an independent rebrand/derivative of
-[MuseBridge](https://github.com/Some1sm/MuseBridge) by Some1sm, used and
-redistributed with the original author's permission. Extended here with the
-honesty guard, media capture, clarifying-question detection, and SPA reload
-fixes.
+**MuseRelay** — Muse AI bridge for Claude Code.
+Repository: [heijiboy/MuseRelay](https://github.com/heijiboy/MuseRelay)
+
+Maintained and extended in this repo with the honesty guard (path-claim
+verification), media/blob capture, clarifying-question detection, and SPA
+stale-bubble reload handling.
